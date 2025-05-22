@@ -1,0 +1,368 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>IRC Web Client</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 0;
+            padding: 0;
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+            background-color: #f5f5f5;
+        }
+        .container {
+            display: flex;
+            flex: 1;
+            overflow: hidden;
+        }
+        .sidebar {
+            width: 200px;
+            background-color: #2c3e50;
+            color: white;
+            padding: 10px;
+            overflow-y: auto;
+        }
+        .main-content {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+        .message-area {
+            flex: 1;
+            padding: 10px;
+            overflow-y: auto;
+            background-color: white;
+            border-bottom: 1px solid #ddd;
+        }
+        .input-area {
+            padding: 10px;
+            background-color: #f9f9f9;
+            border-top: 1px solid #ddd;
+        }
+        .connection-form {
+            padding: 10px;
+            background-color: #f0f0f0;
+            border-bottom: 1px solid #ddd;
+        }
+        input[type="text"], input[type="number"], input[type="password"] {
+            padding: 8px;
+            margin: 5px 0;
+            border: 1px solid #ddd;
+            border-radius: 3px;
+        }
+        button {
+            padding: 8px 15px;
+            background-color: #3498db;
+            color: white;
+            border: none;
+            border-radius: 3px;
+            cursor: pointer;
+        }
+        button:hover {
+            background-color: #2980b9;
+        }
+        .message {
+            margin: 5px 0;
+            padding: 5px;
+            border-radius: 3px;
+        }
+        .system-message {
+            color: #7f8c8d;
+            font-style: italic;
+        }
+        .error-message {
+            color: #e74c3c;
+        }
+        .channel-list {
+            list-style-type: none;
+            padding: 0;
+            margin: 10px 0;
+        }
+        .channel-list li {
+            padding: 5px;
+            cursor: pointer;
+        }
+        .channel-list li:hover {
+            background-color: #34495e;
+        }
+        .channel-list li.active {
+            background-color: #3498db;
+        }
+        #message-input {
+            width: calc(100% - 100px);
+        }
+        .toggle-button {
+            margin-top: 10px;
+            background-color: #7f8c8d;
+        }
+        .advanced-options {
+            display: none;
+            margin-top: 10px;
+            padding: 10px;
+            background-color: #e8e8e8;
+            border-radius: 3px;
+        }
+        .modal {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0, 0, 0, 0.5);
+        }
+        .modal-content {
+            background-color: white;
+            margin: 15% auto;
+            padding: 20px;
+            width: 80%;
+            max-width: 500px;
+            border-radius: 5px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="sidebar">
+            <h3>Channels</h3>
+            <ul id="channel-list" class="channel-list">
+                <!-- Channels will be added here -->
+            </ul>
+            <h3>Users</h3>
+            <ul id="user-list" class="channel-list">
+                <!-- Users will be added here -->
+            </ul>
+        </div>
+        <div class="main-content">
+            <div class="connection-form">
+                <h3>Connect to IRC Server</h3>
+                <div>
+                    <input type="text" id="server" placeholder="Server (default: irc.libera.chat)" value="irc.libera.chat">
+                    <input type="number" id="port" placeholder="Port (default: 6667)" value="6667">
+                    <input type="text" id="nickname" placeholder="Nickname (required)" required>
+                    <button id="connect-btn">Connect</button>
+                    <button id="disconnect-btn" disabled>Disconnect</button>
+                </div>
+                <button id="toggle-advanced" class="toggle-button">Advanced Options</button>
+                <div id="advanced-options" class="advanced-options">
+                    <h4>User Information</h4>
+                    <input type="text" id="username" placeholder="Username (optional)">
+                    <input type="text" id="realname" placeholder="Real Name (optional)">
+                    
+                    <h4>Proxy Settings</h4>
+                    <select id="proxy-type">
+                        <option value="">No Proxy</option>
+                        <option value="socks4">SOCKS4</option>
+                        <option value="socks5">SOCKS5</option>
+                        <option value="http">HTTP</option>
+                    </select>
+                    <input type="text" id="proxy-host" placeholder="Proxy Host">
+                    <input type="number" id="proxy-port" placeholder="Proxy Port">
+                    <input type="text" id="proxy-username" placeholder="Proxy Username (optional)">
+                    <input type="password" id="proxy-password" placeholder="Proxy Password (optional)">
+                </div>
+            </div>
+            <div class="message-area" id="message-area">
+                <!-- Messages will appear here -->
+                <div class="message system-message">Welcome to the IRC Web Client</div>
+            </div>
+            <div class="input-area">
+                <input type="text" id="message-input" placeholder="Type a message or command (/join, /msg, etc.)" disabled>
+                <button id="send-btn" disabled>Send</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Join Channel Modal -->
+    <div id="join-modal" class="modal">
+        <div class="modal-content">
+            <h3>Join Channel</h3>
+            <input type="text" id="channel-name" placeholder="Channel name (e.g., #channel)">
+            <button id="join-channel-btn">Join</button>
+            <button id="close-modal-btn">Cancel</button>
+        </div>
+    </div>
+
+    <script src="https://cdn.socket.io/4.4.1/socket.io.min.js"></script>
+    <script>
+        document.addEventListener('DOMContentLoaded', () => {
+            const socket = io();
+            const channels = new Set();
+            let currentChannel = null;
+            
+            // DOM elements
+            const messageArea = document.getElementById('message-area');
+            const messageInput = document.getElementById('message-input');
+            const sendBtn = document.getElementById('send-btn');
+            const connectBtn = document.getElementById('connect-btn');
+            const disconnectBtn = document.getElementById('disconnect-btn');
+            const toggleAdvancedBtn = document.getElementById('toggle-advanced');
+            const advancedOptions = document.getElementById('advanced-options');
+            const channelList = document.getElementById('channel-list');
+            
+            // Toggle advanced options
+            toggleAdvancedBtn.addEventListener('click', () => {
+                advancedOptions.style.display = advancedOptions.style.display === 'none' ? 'block' : 'none';
+            });
+            
+            // Connect to IRC server
+            connectBtn.addEventListener('click', () => {
+                const server = document.getElementById('server').value || 'irc.libera.chat';
+                const port = parseInt(document.getElementById('port').value || '6667');
+                const nickname = document.getElementById('nickname').value;
+                const username = document.getElementById('username').value;
+                const realname = document.getElementById('realname').value;
+                
+                const proxyType = document.getElementById('proxy-type').value;
+                const proxyHost = document.getElementById('proxy-host').value;
+                const proxyPort = document.getElementById('proxy-port').value;
+                const proxyUsername = document.getElementById('proxy-username').value;
+                const proxyPassword = document.getElementById('proxy-password').value;
+                
+                if (!nickname) {
+                    addMessage('Nickname is required', 'error-message');
+                    return;
+                }
+                
+                socket.emit('connect_to_server', {
+                    server,
+                    port,
+                    nickname,
+                    username,
+                    realname,
+                    proxy_type: proxyType,
+                    proxy_host: proxyHost,
+                    proxy_port: proxyPort,
+                    proxy_username: proxyUsername,
+                    proxy_password: proxyPassword
+                });
+                
+                messageInput.disabled = false;
+                sendBtn.disabled = false;
+                connectBtn.disabled = true;
+                disconnectBtn.disabled = false;
+            });
+            
+            // Disconnect from IRC server
+            disconnectBtn.addEventListener('click', () => {
+                socket.emit('disconnect_from_server');
+                messageInput.disabled = true;
+                sendBtn.disabled = true;
+                connectBtn.disabled = false;
+                disconnectBtn.disabled = true;
+                channels.clear();
+                updateChannelList();
+                currentChannel = null;
+            });
+            
+            // Send message or command
+            sendBtn.addEventListener('click', sendMessage);
+            messageInput.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter') {
+                    sendMessage();
+                }
+            });
+            
+            function sendMessage() {
+                const message = messageInput.value.trim();
+                if (!message) return;
+                
+                if (message.startsWith('/')) {
+                    socket.emit('send_command', { command: message });
+                } else if (currentChannel) {
+                    socket.emit('send_message', {
+                        target: currentChannel,
+                        message: message
+                    });
+                } else {
+                    addMessage('You are not in any channel. Join a channel first with /join.', 'error-message');
+                }
+                
+                messageInput.value = '';
+            }
+            
+            // Socket events
+            socket.on('connect', () => {
+                addMessage('Connected to IRC Web GUI', 'system-message');
+            });
+            
+            socket.on('disconnect', () => {
+                addMessage('Disconnected from IRC Web GUI', 'system-message');
+                messageInput.disabled = true;
+                sendBtn.disabled = true;
+                connectBtn.disabled = false;
+                disconnectBtn.disabled = true;
+                channels.clear();
+                updateChannelList();
+                currentChannel = null;
+            });
+            
+            socket.on('status', (data) => {
+                addMessage(data.message, 'system-message');
+                
+                // Check for channel join/leave messages
+                const joinMatch = data.message.match(/Joined channel (#\S+)/);
+                const leaveMatch = data.message.match(/Left channel (#\S+)/);
+                
+                if (joinMatch) {
+                    const channel = joinMatch[1];
+                    channels.add(channel);
+                    currentChannel = channel;
+                    updateChannelList();
+                } else if (leaveMatch) {
+                    const channel = leaveMatch[1];
+                    channels.delete(channel);
+                    if (currentChannel === channel) {
+                        currentChannel = null;
+                    }
+                    updateChannelList();
+                }
+            });
+            
+            socket.on('error', (data) => {
+                addMessage(data.message, 'error-message');
+            });
+            
+            socket.on('message', (data) => {
+                // Parse IRC message
+                const message = data.message;
+                parseAndDisplayIRCMessage(message);
+            });
+            
+            function addMessage(text, className = '') {
+                const div = document.createElement('div');
+                div.textContent = text;
+                div.className = `message ${className}`;
+                messageArea.appendChild(div);
+                messageArea.scrollTop = messageArea.scrollHeight;
+            }
+            
+            function updateChannelList() {
+                channelList.innerHTML = '';
+                channels.forEach(channel => {
+                    const li = document.createElement('li');
+                    li.textContent = channel;
+                    if (channel === currentChannel) {
+                        li.classList.add('active');
+                    }
+                    li.addEventListener('click', () => {
+                        currentChannel = channel;
+                        updateChannelList();
+                    });
+                    channelList.appendChild(li);
+                });
+            }
+            
+            function parseAndDisplayIRCMessage(message) {
+                // Simple display for now
+                addMessage(message);
+            }
+        });
+    </script>
+</body>
+</html>
