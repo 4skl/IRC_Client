@@ -1,6 +1,6 @@
 # Simple IRC Client
 
-A lightweight command-line IRC client written in Python with basic functionality.
+A lightweight command-line and web-based IRC client written in Python with both basic and advanced functionality.
 
 ## Features
 
@@ -9,8 +9,10 @@ A lightweight command-line IRC client written in Python with basic functionality
 - Send public messages to channels
 - Send private messages to users
 - List available channels
+- Display and set channel topics
+- Track users in channels with proper mode display (operators, voiced users)
 - Basic proxy support (requires PySocks)
-- Web GUI interface (requires Flask)
+- Web GUI interface with real-time updates
 
 ## Requirements
 
@@ -64,10 +66,17 @@ To use the web-based GUI:
 
 ```powershell
 # Make sure you've activated your virtual environment and installed dependencies
-python .\irc_client_gui.py
+python .\irc_client_gui_updated.py  # Use the updated version with all features
 ```
 
-Then open your web browser and navigate to http://localhost:5000. You can connect to IRC servers, join channels, and send messages through the web interface.
+Then open your web browser and navigate to http://localhost:5000. The web interface provides:
+
+- Server connection with optional proxy support
+- Channel joining/leaving
+- Real-time message display with proper formatting
+- User list with role indicators (operators, voiced users)
+- Channel topic display and management
+- Support for standard IRC commands
 
 ### Advanced Options
 
@@ -98,10 +107,24 @@ Once connected, you can use these commands:
 | `/msg target message` | Send a private message |
 | `/raw command` | Send a raw IRC command |
 | `/list` | List available channels |
+| `/topic [#channel] [new topic]` | View or set channel topic |
 | `/help` | Show help message |
 | `/quit` or `/exit` | Disconnect and exit |
 
 Messages not starting with `/` are sent to the current channel.
+
+### Web Interface Features
+
+The web interface provides additional functionality:
+
+- **Channel List**: Click on any channel in the sidebar to switch between joined channels
+- **User List**: 
+  - View all users in the current channel with their mode indicators
+  - @ for channel operators (shown in red)
+  - + for voiced users (shown in green)
+  - Click on a username to start a private message
+- **Topic Display**: View the current channel's topic at the top of the message area
+- **Message Formatting**: Different message types (errors, system messages, private messages) use different colors for easy reading
 
 ## Example Session
 
@@ -141,6 +164,33 @@ Messages not starting with `/` are sent to the current channel.
 - The `/list` command may return a large amount of data on busy servers.
 - The proxy support requires the PySocks library; without it, the client will run in non-proxy mode.
 
+## Testing
+
+To test the IRC client functionality, run the test scripts:
+
+```powershell
+# Simple test for both CLI and GUI interfaces
+python .\test_irc_client_simple.py
+
+# More comprehensive tests
+python .\test_irc_client_all.py
+```
+
+## File Structure
+
+- `irc_client.py` - Core IRC client implementation
+- `irc_client_gui_updated.py` - Latest version of the web GUI (recommended)
+- `irc_client_gui.py` - Original web GUI implementation
+- `templates/index.html` - HTML template for the web interface
+- `templates/index_enhanced.html` - Enhanced template with user list and topic display
+- `test_irc_client_simple.py` - Simple test script for both interfaces
+
 ## License
 
 [WTFPL](LICENSE) - Do What The F*** You Want To Public License
+
+## Donations (optional)
+
+If you find this project useful, please consider making a donation to support its development.
+
+XMR (Monero): 83fxvbkP8M1DzRSEtoEqNN9qmMD7c1HN1G535GLx424dQGZj3dagHqbP9T2yRF3c9BMV3LZ2s7zHYF9cWBRfCraLBt9EdRq

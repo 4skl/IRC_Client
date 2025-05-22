@@ -1,4 +1,410 @@
-<!DOCTYPE html>
+#!/usr/bin/env python3
+"""
+Web GUI for the IRC Client
+"""
+import os
+import json
+import re
+from threading import Lock
+from flask import Flask, render_template, request, jsonify, session
+from flask_socketio import SocketIO, emit
+from irc_client import IRCClient
+
+# Initialize Flask app
+app = Flask(__name__)
+app.config['SECRET_KEY'] = os.urandom(24).hex()  # Generate a random secret key
+socketio = SocketIO(app, cors_allowed_origins="*")
+
+# Store client instances - key is session ID
+clients = {}
+clients_lock = Lock()
+
+# Message buffer for each client (session)
+message_buffers = {}
+
+
+@app.route('/')
+def index():
+    """Render the main page"""
+    return render_template('index.html')
+
+
+@socketio.on('connect')
+def handle_connect():
+    """Handle client connection"""
+    session_id = request.sid
+    with clients_lock:
+        if session_id not in clients:
+            message_buffers[session_id] = []
+    emit('status', {'message': 'Connected to IRC Web GUI'})
+
+
+@socketio.on('disconnect')
+def handle_disconnect():
+    """Handle client disconnection"""
+    session_id = request.sid
+    with clients_lock:
+        if session_id in clients:
+            client = clients[session_id]
+            client.disconnect()
+            del clients[session_id]
+            if session_id in message_buffers:
+                del message_buffers[session_id]
+
+
+@socketio.on('connect_to_server')
+def handle_connect_to_server(data):
+    """Connect to IRC server"""
+    server = data.get('server', 'irc.libera.chat')
+    port = int(data.get('port', 6667))
+    nickname = data.get('nickname')
+    username = data.get('username', nickname)
+    realname = data.get('realname', nickname)
+    
+    # Proxy settings
+    proxy_type = data.get('proxy_type')
+    proxy_host = data.get('proxy_host')
+    proxy_port = data.get('proxy_port')
+    if proxy_port and proxy_port.isdigit():
+        proxy_port = int(proxy_port)
+    proxy_username = data.get('proxy_username')
+    proxy_password = data.get('proxy_password')
+    
+    if not nickname:
+        emit('error', {'message': 'Nickname is required'})
+        return
+    
+    session_id = request.sid
+    
+    # Create a custom message handler for this client
+    def message_handler(message):
+        with clients_lock:
+            if session_id in message_buffers:
+                message_buffers[session_id].append(message)
+                socketio.emit('message', {'message': message}, room=session_id)
+    
+    # Create IRC client
+    client = CustomIRCClient(
+        server=server,
+        port=port,
+        nickname=nickname,
+        username=username,
+        realname=realname,
+        proxy_type=proxy_type,
+        proxy_host=proxy_host,
+        proxy_port=proxy_port,
+        proxy_username=proxy_username,
+        proxy_password=proxy_password,
+        message_callback=message_handler
+    )
+    
+    # Connect to server
+    success = client.connect()
+    if success:
+        with clients_lock:
+            clients[session_id] = client
+        emit('status', {'message': f'Connected to {server}:{port}'})
+    else:
+        emit('error', {'message': f'Failed to connect to {server}:{port}'})
+
+
+@socketio.on('join_channel')
+def handle_join_channel(data):
+    """Join an IRC channel"""
+    channel = data.get('channel', '')
+    session_id = request.sid
+    
+    with clients_lock:
+        if session_id not in clients:
+            emit('error', {'message': 'Not connected to any server'})
+            return
+        
+        client = clients[session_id]
+        client.join_channel(channel)
+        emit('status', {'message': f'Joined channel {channel}'})
+
+
+@socketio.on('leave_channel')
+def handle_leave_channel(data):
+    """Leave an IRC channel"""
+    channel = data.get('channel', '')
+    session_id = request.sid
+    
+    with clients_lock:
+        if session_id not in clients:
+            emit('error', {'message': 'Not connected to any server'})
+            return
+        
+        client = clients[session_id]
+        if not channel and client.current_channel:
+            channel = client.current_channel
+        
+        if channel:
+            client.leave_channel(channel)
+            emit('status', {'message': f'Left channel {channel}'})
+        else:
+            emit('error', {'message': 'No channel specified and not in any channel'})
+
+
+@socketio.on('send_message')
+def handle_send_message(data):
+    """Send a message to a channel or user"""
+    target = data.get('target', '')
+    message = data.get('message', '')
+    session_id = request.sid
+    
+    with clients_lock:
+        if session_id not in clients:
+            emit('error', {'message': 'Not connected to any server'})
+            return
+        
+        client = clients[session_id]
+        if not target and client.current_channel:
+            target = client.current_channel
+        
+        if target and message:
+            client.send_message(target, message)
+        else:
+            emit('error', {'message': 'Target and message are required'})
+
+
+@socketio.on('send_command')
+def handle_send_command(data):
+    """Handle IRC commands"""
+    command = data.get('command', '').strip()
+    session_id = request.sid
+    
+    if not command:
+        emit('error', {'message': 'No command provided'})
+        return
+    
+    with clients_lock:
+        if session_id not in clients:
+            emit('error', {'message': 'Not connected to any server'})
+            return
+        
+        client = clients[session_id]
+        
+        # Process command
+        if command.startswith('/'):
+            command = command[1:]  # Remove leading slash
+            parts = command.split(' ', 1)
+            cmd = parts[0].lower()
+            args = parts[1] if len(parts) > 1 else ""
+            
+            if cmd == "join":
+                if args:
+                    client.join_channel(args)
+                    emit('status', {'message': f'Joined channel {args}'})
+                else:
+                    emit('error', {'message': 'Usage: /join <channel>'})
+            
+            elif cmd == "leave" or cmd == "part":
+                if args:
+                    client.leave_channel(args)
+                    emit('status', {'message': f'Left channel {args}'})
+                elif client.current_channel:
+                    channel = client.current_channel
+                    client.leave_channel(channel)
+                    emit('status', {'message': f'Left channel {channel}'})
+                else:
+                    emit('error', {'message': 'Not in any channel'})
+            
+            elif cmd == "msg" or cmd == "query":
+                msg_parts = args.split(' ', 1)
+                if len(msg_parts) == 2:
+                    target, msg = msg_parts
+                    client.send_message(target, msg)
+                else:
+                    emit('error', {'message': 'Usage: /msg <target> <message>'})
+            
+            elif cmd == "raw":
+                if args:
+                    client.send(args)
+                else:
+                    emit('error', {'message': 'Usage: /raw <command>'})
+            
+            elif cmd == "list":
+                emit('status', {'message': 'Requesting channel list from server...'})
+                client.send("LIST")
+                
+            elif cmd == "help":
+                help_text = """Available commands:
+/join #channel - Join a channel
+/leave [#channel] - Leave current or specified channel
+/msg target message - Send a private message
+/raw command - Send a raw IRC command
+/list - List available channels
+/quit - Disconnect from server
+/help - Show this help message"""
+                emit('help', {'message': help_text})
+                
+            elif cmd == "quit":
+                client.disconnect()
+                emit('status', {'message': 'Disconnected from server'})
+                with clients_lock:
+                    if session_id in clients:
+                        del clients[session_id]
+            
+            else:
+                # Send raw command
+                client.send(command)
+        else:
+            # Not a command, send as message to current channel
+            if client.current_channel:
+                client.send_message(client.current_channel, command)
+            else:
+                emit('error', {'message': 'Not in any channel. Join a channel first with /join.'})
+
+
+@socketio.on('disconnect_from_server')
+def handle_disconnect_from_server():
+    """Disconnect from IRC server"""
+    session_id = request.sid
+    
+    with clients_lock:
+        if session_id in clients:
+            client = clients[session_id]
+            client.disconnect()
+            del clients[session_id]
+            emit('status', {'message': 'Disconnected from server'})
+        else:
+            emit('error', {'message': 'Not connected to any server'})
+
+
+class CustomIRCClient(IRCClient):
+    """Extended IRC client with custom message handling"""
+    
+    def __init__(self, server, port, nickname, username=None, realname=None,
+                 proxy_type=None, proxy_host=None, proxy_port=None,
+                 proxy_username=None, proxy_password=None, message_callback=None):
+        super().__init__(server, port, nickname, username, realname,
+                         proxy_type, proxy_host, proxy_port,
+                         proxy_username, proxy_password)
+        self.message_callback = message_callback
+        self.session_id = None
+    
+    def process_message(self, message):
+        """Override process_message to call the callback and handle special messages"""
+        # Call the original implementation
+        super().process_message(message)
+        
+        # Parse IRC message
+        match = re.match(r'^(?::([^ ]+) )?([^ ]+)(?: ((?:[^: ][^ ]* ?)*))?(?: :(.*))?$', message)
+        if match:
+            prefix, command, params_str, trailing = match.groups()
+            params = (params_str or '').split() 
+            if trailing:
+                params.append(trailing)
+            
+            # Handle specific responses that we want to send to the client
+            
+            # Channel topic (332)
+            if command == '332' and len(params) >= 3:
+                channel = params[1]
+                topic = params[2]
+                if self.session_id:
+                    socketio.emit('channel_topic', {
+                        'channel': channel,
+                        'topic': topic
+                    }, room=self.session_id)
+            
+            # Names reply (list of users in channel) - 353
+            elif command == '353' and len(params) >= 4:
+                channel = params[2]
+                users = params[3].split()
+                
+                if self.session_id and channel in self.channel_users:
+                    socketio.emit('user_list', {
+                        'channel': channel,
+                        'users': list(self.channel_users[channel])
+                    }, room=self.session_id)
+        
+        # Call the callback if it exists
+        if self.message_callback:
+            self.message_callback(message)
+
+
+@socketio.on('get_channel_list')
+def handle_get_channel_list():
+    """Get the list of joined channels"""
+    session_id = request.sid
+    
+    with clients_lock:
+        if session_id not in clients:
+            emit('error', {'message': 'Not connected to any server'})
+            return
+        
+        client = clients[session_id]
+        channel_list = list(client.channels)
+        current_channel = client.current_channel
+        
+        emit('channel_list', {
+            'channels': channel_list,
+            'current_channel': current_channel
+        })
+
+
+@socketio.on('get_user_list')
+def handle_get_user_list(data):
+    """Get the list of users in a channel"""
+    channel = data.get('channel', '')
+    session_id = request.sid
+    
+    with clients_lock:
+        if session_id not in clients:
+            emit('error', {'message': 'Not connected to any server'})
+            return
+        
+        client = clients[session_id]
+        if not channel and client.current_channel:
+            channel = client.current_channel
+            
+        if channel:
+            # Get users from the client's cache
+            users = list(client.get_channel_users(channel))
+            emit('user_list', {'channel': channel, 'users': users})
+            
+            # Also request an updated list from the server
+            client.send(f"NAMES {channel}")
+        else:
+            emit('error', {'message': 'No channel specified and not in any channel'})
+
+
+@socketio.on('get_channel_topic')
+def handle_get_channel_topic(data):
+    """Get the topic of a channel"""
+    channel = data.get('channel', '')
+    session_id = request.sid
+    
+    with clients_lock:
+        if session_id not in clients:
+            emit('error', {'message': 'Not connected to any server'})
+            return
+        
+        client = clients[session_id]
+        if not channel and client.current_channel:
+            channel = client.current_channel
+            
+        if channel:
+            # Get topic from the client's cache
+            topic = client.get_topic(channel)
+            if topic:
+                emit('channel_topic', {'channel': channel, 'topic': topic})
+            
+            # Also request an updated topic from the server
+            client.get_channel_topic(channel)
+        else:
+            emit('error', {'message': 'No channel specified and not in any channel'})
+
+
+# Create templates directory if it doesn't exist
+if not os.path.exists('templates'):
+    os.makedirs('templates')
+
+# Create the index.html template
+with open('templates/index.html', 'w') as f:
+    f.write('''<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
@@ -164,8 +570,8 @@
                     <input type="text" id="server" placeholder="Server (default: irc.libera.chat)" value="irc.libera.chat">
                     <input type="number" id="port" placeholder="Port (default: 6667)" value="6667">
                     <input type="text" id="nickname" placeholder="Nickname (required)" required>
-                    <button id="connect-btn" type="button">Connect</button>
-                    <button id="disconnect-btn" type="button" disabled>Disconnect</button>
+                    <button id="connect-btn">Connect</button>
+                    <button id="disconnect-btn" disabled>Disconnect</button>
                 </div>
                 <button id="toggle-advanced" class="toggle-button">Advanced Options</button>
                 <div id="advanced-options" class="advanced-options">
@@ -230,8 +636,7 @@
             });
             
             // Connect to IRC server
-            connectBtn.addEventListener('click', (e) => {
-                e.preventDefault();
+            connectBtn.addEventListener('click', () => {
                 const server = document.getElementById('server').value || 'irc.libera.chat';
                 const port = parseInt(document.getElementById('port').value || '6667');
                 const nickname = document.getElementById('nickname').value;
@@ -324,9 +729,10 @@
             
             socket.on('status', (data) => {
                 addMessage(data.message, 'system-message');
-                  // Check for channel join/leave messages
-                const joinMatch = data.message.match(/Joined channel (#[^ ]+)/);
-                const leaveMatch = data.message.match(/Left channel (#[^ ]+)/);
+                
+                // Check for channel join/leave messages
+                const joinMatch = data.message.match(/Joined channel (#\S+)/);
+                const leaveMatch = data.message.match(/Left channel (#\S+)/);
                 const disconnectMatch = data.message.match(/Disconnected from server/);
                 
                 if (joinMatch) {
@@ -365,13 +771,12 @@
             
             socket.on('help', (data) => {
                 // Display help message with better formatting
-                // Use template literal to avoid unescaped line break issues
                 const helpLines = data.message.split('\n');
-                addMessage(`--- HELP ---`, 'help-header');
+                addMessage('--- HELP ---', 'help-header');
                 helpLines.forEach(line => {
                     addMessage(line, 'help-message');
                 });
-                addMessage(`------------`, 'help-footer');
+                addMessage('------------', 'help-footer');
             });
             
             socket.on('channel_list', (data) => {
@@ -405,87 +810,10 @@
                 messageArea.appendChild(div);
                 messageArea.scrollTop = messageArea.scrollHeight;
             }
-              function updateChannelList() {
+            
+            function updateChannelList() {
                 channelList.innerHTML = '';
                 channels.forEach(channel => {
                     const li = document.createElement('li');
                     li.textContent = channel;
-                    if (channel === currentChannel) {
-                        li.className = 'active';
-                    }
-                    li.addEventListener('click', () => {
-                        currentChannel = channel;
-                        updateChannelList();
-                        messageInput.focus();
-                    });
-                    channelList.appendChild(li);
-                });
-            }
-            
-            // Helper function to parse IRC messages and display them nicely
-            function parseAndDisplayIRCMessage(message) {
-                if (message.includes(' PRIVMSG ')) {
-                    // Private message or channel message
-                    const match = message.match(/:([^!]+)!.*? PRIVMSG ([^ ]+) :(.+)/);
-                    if (match) {
-                        const sender = match[1];
-                        const target = match[2];
-                        const content = match[3];
-                        if (target.startsWith('#')) {
-                            // Channel message
-                            addMessage(`<${sender}> ${content}`, 'chat-message');
-                        } else {
-                            // Private message
-                            addMessage(`[PM from ${sender}] ${content}`, 'private-message');
-                        }
-                        return;
-                    }
-                } else if (message.includes(' 332 ')) {
-                    // Topic message
-                    const match = message.match(/ 332 [^ ]+ (#[^ ]+) :(.+)/);
-                    if (match) {
-                        const channel = match[1];
-                        const topic = match[2];
-                        addMessage(`Topic for ${channel}: ${topic}`, 'system-message');
-                        return;
-                    }
-                } else if (message.includes(' 353 ')) {
-                    // Names list (users in channel)
-                    const match = message.match(/ 353 [^ ]+ [=@*] (#[^ ]+) :(.+)/);
-                    if (match) {
-                        const channel = match[1];
-                        const users = match[2].split(' ');
-                        addMessage(`Users in ${channel}: ${users.join(', ')}`, 'list-message');
-                        return;
-                    }
-                } else if (message.includes(' JOIN ')) {
-                    // User joining
-                    const match = message.match(/:([^!]+)!.*? JOIN (#[^ ]+)/);
-                    if (match) {
-                        const user = match[1];
-                        const channel = match[2];
-                        addMessage(`${user} has joined ${channel}`, 'system-message');
-                        return;
-                    }
-                } else if (message.includes(' PART ') || message.includes(' QUIT ')) {
-                    // User leaving/quitting
-                    const partMatch = message.match(/:([^!]+)!.*? PART (#[^ ]+)/);
-                    const quitMatch = message.match(/:([^!]+)!.*? QUIT/);
-                    if (partMatch) {
-                        const user = partMatch[1];
-                        const channel = partMatch[2];
-                        addMessage(`${user} has left ${channel}`, 'system-message');
-                        return;
-                    } else if (quitMatch) {
-                        const user = quitMatch[1];
-                        addMessage(`${user} has quit`, 'system-message');
-                        return;
-                    }
-                }
-                // Fallback for other messages
-                addMessage(message, '');
-            }
-        });
-    </script>
-</body>
-</html>
+                    if

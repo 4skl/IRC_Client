@@ -283,9 +283,6 @@ def main():
     """Main function to parse arguments and run the IRC client"""
     parser = argparse.ArgumentParser(description="Simple IRC Client with Proxy Support")
     
-    # Version information
-    parser.add_argument("--version", action="version", version="IRC Client v1.0.0")
-    
     # IRC Connection settings
     parser.add_argument("-s", "--server", default="irc.libera.chat", help="IRC server address (default: irc.libera.chat)")
     parser.add_argument("-p", "--port", type=int, default=6667, help="IRC server port (default: 6667)")

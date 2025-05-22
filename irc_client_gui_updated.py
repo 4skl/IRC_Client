@@ -5,6 +5,7 @@ Web GUI for the IRC Client
 import os
 import json
 import re
+import shutil
 from threading import Lock
 from flask import Flask, render_template, request, jsonify, session
 from flask_socketio import SocketIO, emit
@@ -21,6 +22,15 @@ clients_lock = Lock()
 
 # Message buffer for each client (session)
 message_buffers = {}
+
+# Make sure templates directory exists
+if not os.path.exists('templates'):
+    os.makedirs('templates')
+
+# Use enhanced template if it exists, otherwise copy from index_enhanced.html
+if not os.path.exists('templates/index.html') and os.path.exists('templates/index_enhanced.html'):
+    shutil.copyfile('templates/index_enhanced.html', 'templates/index.html')
+    print("Using enhanced template for the web interface")
 
 
 @app.route('/')
@@ -98,8 +108,10 @@ def handle_connect_to_server(data):
         message_callback=message_handler
     )
     
-    # Connect to server
+    # Set session ID and connect to server
+    client.session_id = session_id
     success = client.connect()
+    
     if success:
         with clients_lock:
             clients[session_id] = client
@@ -191,14 +203,14 @@ def handle_send_command(data):
             parts = command.split(' ', 1)
             cmd = parts[0].lower()
             args = parts[1] if len(parts) > 1 else ""
-
+            
             if cmd == "join":
                 if args:
                     client.join_channel(args)
                     emit('status', {'message': f'Joined channel {args}'})
                 else:
                     emit('error', {'message': 'Usage: /join <channel>'})
-
+                    
             elif cmd == "leave" or cmd == "part":
                 if args:
                     client.leave_channel(args)
@@ -209,7 +221,7 @@ def handle_send_command(data):
                     emit('status', {'message': f'Left channel {channel}'})
                 else:
                     emit('error', {'message': 'Not in any channel'})
-
+            
             elif cmd == "msg" or cmd == "query":
                 msg_parts = args.split(' ', 1)
                 if len(msg_parts) == 2:
@@ -217,17 +229,17 @@ def handle_send_command(data):
                     client.send_message(target, msg)
                 else:
                     emit('error', {'message': 'Usage: /msg <target> <message>'})
-
+            
             elif cmd == "raw":
                 if args:
                     client.send(args)
                 else:
                     emit('error', {'message': 'Usage: /raw <command>'})
-
+            
             elif cmd == "list":
                 emit('status', {'message': 'Requesting channel list from server...'})
                 client.send("LIST")
-
+                
             elif cmd == "topic":
                 if args:
                     parts = args.split(' ', 1)
@@ -243,7 +255,7 @@ def handle_send_command(data):
                     client.get_channel_topic(client.current_channel)
                 else:
                     emit('error', {'message': 'Usage: /topic <channel> [topic]'})
-
+                    
             elif cmd == "help":
                 help_text = """Available commands:
 /join #channel - Join a channel
@@ -255,14 +267,14 @@ def handle_send_command(data):
 /quit - Disconnect from server
 /help - Show this help message"""
                 emit('help', {'message': help_text})
-
+                
             elif cmd == "quit":
                 client.disconnect()
                 emit('status', {'message': 'Disconnected from server'})
                 with clients_lock:
                     if session_id in clients:
                         del clients[session_id]
-
+            
             else:
                 # Send raw command
                 client.send(command)
@@ -414,12 +426,6 @@ def handle_get_channel_topic(data):
         else:
             emit('error', {'message': 'No channel specified and not in any channel'})
 
-
-# Use enhanced template if it exists, otherwise copy from index_enhanced.html
-if not os.path.exists('templates/index.html') and os.path.exists('templates/index_enhanced.html'):
-    import shutil
-    shutil.copyfile('templates/index_enhanced.html', 'templates/index.html')
-    print("Using enhanced template for the web interface")
 
 if __name__ == '__main__':
     socketio.run(app, host='0.0.0.0', port=5000, debug=True, allow_unsafe_werkzeug=True)

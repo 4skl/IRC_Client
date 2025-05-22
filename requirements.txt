@@ -2,6 +2,11 @@
 flask>=2.0.0
 flask-socketio>=5.0.0
 eventlet>=0.30.0
+python-socketio>=5.0.0
+bidict>=0.22.0
+
+# Command line interface dependencies
+colorama>=0.4.4  # For colored terminal output
 
 # Optional requirements
 PySocks>=1.7.1  # For proxy support
